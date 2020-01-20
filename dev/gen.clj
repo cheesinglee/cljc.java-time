@@ -1,48 +1,51 @@
- (ns gen
-   (:require [clojure.reflect :as rf]
-             [clojure.set :as set]
-             [medley.core :as m]
-             [defwrapper :as df]
-             [clojure.string :as string]
-             [camel-snake-kebab.core :as csk]
-             [clojure.java.io :as io])
-   (:import [java.time Period
-                       LocalDate
-                       LocalTime
-                       LocalDateTime
-                       ZonedDateTime
-                       OffsetTime
-                       Instant
-                       OffsetDateTime
-                       ZoneId
-                       ZoneOffset
-                       DayOfWeek
-                       LocalTime
-                       Month
-                       MonthDay
-                       Duration
-                       Year
-                       YearMonth
-                       Clock ZoneOffset]
-            [java.time.format DateTimeFormatter
-                              ResolverStyle]
-            [java.time.temporal TemporalAdjusters
-                                Temporal
-                                TemporalAmount
-                                ChronoUnit
-                                ChronoField]))
- 
- (defn header [class-name ns-name sub-p]
-   (list 'ns (symbol (str "cljc.java-time." (when sub-p (str sub-p ".")) ns-name))
-     (list :require
-       ['cljs.java-time.interop :as 'jti]
-       (symbol "#?") (list
-                       :cljs [(symbol (str "java.time" (when sub-p (str "." sub-p)))) :refer [class-name]]))
-     (list :refer-clojure :exclude ['get 'range 'format 'min 'max 'next 'name 'resolve])
-     (symbol "#?") (list
-                            :clj
-                            (list :import [(symbol (str "java.time" (when sub-p (str "." sub-p)))) class-name]))))
- 
+(ns gen
+  (:require [clojure.reflect :as rf]
+            [clojure.set :as set]
+            [medley.core :as m]
+            [defwrapper :as df]
+            [clojure.string :as string]
+            [camel-snake-kebab.core :as csk]
+            [clojure.java.io :as io])
+  (:import [java.time Period
+            LocalDate
+            LocalTime
+            LocalDateTime
+            ZonedDateTime
+            OffsetTime
+            Instant
+            OffsetDateTime
+            ZoneId
+            ZoneOffset
+            DayOfWeek
+            LocalTime
+            Month
+            MonthDay
+            Duration
+            Year
+            YearMonth
+            Clock ZoneOffset]
+           [java.time.format DateTimeFormatter
+            DateTimeFormatterBuilder
+            ResolverStyle]
+           [java.time.temporal TemporalAdjusters
+            Temporal
+            TemporalAmount
+            TemporalUnit
+            ChronoUnit
+            ChronoField
+            IsoFields]))
+
+(defn header [class-name ns-name sub-p]
+  (list 'ns (symbol (str "cljc.java-time." (when sub-p (str sub-p ".")) ns-name))
+        (list :require
+              ['cljs.java-time.interop :as 'jti]
+              (symbol "#?") (list
+                             :cljs [(symbol (str "java.time" (when sub-p (str "." sub-p)))) :refer [class-name]]))
+        (list :refer-clojure :exclude ['get 'range 'format 'min 'max 'next 'name 'resolve])
+        (symbol "#?") (list
+                       :clj
+                       (list :import [(symbol (str "java.time" (when sub-p (str "." sub-p)))) class-name]))))
+
  (defn type-hint [x]
    (let [x (string/replace (str x) "<>" "")]
      (when (or (clojure.string/includes? x ".")
@@ -53,13 +56,14 @@
 (defn gen-for-class [c sub-p]
   ;; header
   (println (header (.getSimpleName c) (csk/->kebab-case (.getSimpleName c))
-             sub-p))
+                   sub-p))
   ;; fields
   (doseq [m (:members (rf/reflect c))]
-    (when (and (not (:return-type m)) (not-empty (set/intersection #{:public} (:flags m))))
+    (when (and (not (:return-type m))
+               (set/subset? #{:public :static} (:flags m)))
       (println
-        (list 'def (csk/->kebab-case (:name m))
-          (list '. c (symbol (str "-" (:name m))))))))
+       (list 'def (csk/->kebab-case (:name m))
+             (list '. c (symbol (str "-" (:name m))))))))
   ;; methods
   (doseq [f (df/defwrapper c)]
     (let [f (if (= 'is-leap (second f))
@@ -68,57 +72,57 @@
               f)]
       (pr f))
     (println)))
- 
- (defn generate-library-code! []
-   ;todo - chrono and zone packages. needs cljs.java-time also
-   (binding [*print-meta* true]
-     (doseq [c [Period
-                LocalDate
-                LocalDateTime
-                ZonedDateTime
-                OffsetTime
-                Instant
-                OffsetDateTime
-                ZoneId
-                DayOfWeek
-                LocalTime
-                Month
-                MonthDay
-                Duration
-                Year
-                YearMonth
-                Clock
-                ZoneOffset]]
 
-       (let [f (str "./src/cljc/java_time/" (csk/->snake_case (.getSimpleName c)) ".cljc")
-             _ (io/make-parents f)
-             w (io/writer f)]
+(defn generate-library-code! []
+                                        ;todo - chrono and zone packages. needs cljs.java-time also
+  (binding [*print-meta* true]
+    (doseq [c [Period
+               LocalDate
+               LocalDateTime
+               ZonedDateTime
+               OffsetTime
+               Instant
+               OffsetDateTime
+               ZoneId
+               DayOfWeek
+               LocalTime
+               Month
+               MonthDay
+               Duration
+               Year
+               YearMonth
+               Clock
+               ZoneOffset]]
 
-         (binding [*out* w]
-           (gen-for-class c nil))))
-     (doseq [c [TemporalAdjusters
-                Temporal
-                TemporalAmount
-                ChronoUnit
-                ChronoField]]
-       (let [f (str "./src/cljc/java_time/temporal/" (csk/->snake_case (.getSimpleName c)) ".cljc")
-             _ (io/make-parents f)
-             w (io/writer f)]
-         (binding [*out* w]
-           (gen-for-class c "temporal"))))
-     (doseq [c [DateTimeFormatter
-                ResolverStyle]]
-       (let [f (str "./src/cljc/java_time/format/" (csk/->snake_case (.getSimpleName c)) ".cljc")
-             _ (io/make-parents f)
-             w (io/writer f)]
-         (binding [*out* w]
-           (gen-for-class c "format"))))))
- 
- (comment 
-   
-   (generate-library-code!)
-   (require '[clojure.tools.namespace.repl :as rep])
-   (rep/refresh-all)
-   
-   
-   )
+      (let [f (str "./src/cljc/java_time/" (csk/->snake_case (.getSimpleName c)) ".cljc")
+            _ (io/make-parents f)
+            w (io/writer f)]
+
+        (binding [*out* w]
+          (gen-for-class c nil))))
+    (doseq [c [TemporalAdjusters
+               Temporal
+               TemporalAmount
+               TemporalUnit
+               ChronoUnit
+               ChronoField
+               IsoFields]]
+      (let [f (str "./src/cljc/java_time/temporal/" (csk/->snake_case (.getSimpleName c)) ".cljc")
+            _ (io/make-parents f)
+            w (io/writer f)]
+        (binding [*out* w]
+          (gen-for-class c "temporal"))))
+    (doseq [c [DateTimeFormatter
+               DateTimeFormatterBuilder
+               ResolverStyle]]
+      (let [f (str "./src/cljc/java_time/format/" (csk/->snake_case (.getSimpleName c)) ".cljc")
+            _ (io/make-parents f)
+            w (io/writer f)]
+        (binding [*out* w]
+          (gen-for-class c "format"))))))
+
+
+
+(generate-library-code!)
+#_(require '[clojure.tools.namespace.repl :as rep])
+#_(rep/refresh-all)

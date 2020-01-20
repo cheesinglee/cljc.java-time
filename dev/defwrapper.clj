@@ -6,25 +6,26 @@
 (set! *warn-on-reflection* true)
 (set! *print-meta* true)
 
-(defn class-methods [^Class class]
-  (seq (.getMethods class)))
-
 (defn constructors [^Class klazz]
   (.getDeclaredConstructors klazz))
+
+(defn class-methods [^Class class]
+  (into (seq (.getMethods class))
+        (constructors class)))
 
 (defn return-type [^java.lang.reflect.Method method]
   (.getReturnType method))
 
-(defn parameter-types [^java.lang.reflect.Method method]
+(defn parameter-types [^java.lang.reflect.Executable method]
   (seq (.getParameterTypes method)))
 
-(defn method-static? [^java.lang.reflect.Method method]
+(defn method-static? [^java.lang.reflect.Executable method]
   (java.lang.reflect.Modifier/isStatic (.getModifiers method)))
 
-(defn parameter-count [^java.lang.reflect.Method method]
+(defn parameter-count [^java.lang.reflect.Executable method]
   (.getParameterCount method))
 
-(defn method-name [^java.lang.reflect.Method method]
+(defn method-name [^java.lang.reflect.Executable method]
   (.getName method))
 
 (defn class-name [^Class klazz]
@@ -44,7 +45,7 @@
       (.getName class))
     (string/replace "." "-")))
 
-(defn method-public? [^java.lang.reflect.Method method]
+(defn method-public? [^java.lang.reflect.Executable method]
   (java.lang.reflect.Modifier/isPublic (.getModifiers method)))
 
 (defn primitive-class [sym]
@@ -70,7 +71,7 @@
          char    java.lang.Character
          boolean java.lang.Boolean
          void    java.lang.Object}
-    t t))
+       t t))
 
 (defn ensure-boxed-long-double
   "Allow long and double, box everything else."
@@ -85,11 +86,11 @@
            char    java.lang.Character
            boolean java.lang.Boolean
            void    java.lang.Object}
-      t t)))
+         t t)))
 
-(defn tagged [value tag]
+(defn tagged [value ^Class tag]
   (let [tag (if (and (instance? Class tag) (.isArray ^Class tag))
-              (.getName (type tag)) ;`(array-class ~(primitive-class (class-name (.getComponentType ^Class tag))))
+              (.getName ^Class (type tag)) ;`(array-class ~(primitive-class (class-name (.getComponentType ^Class tag))))
               tag)]
     (vary-meta value assoc :tag (ensure-boxed-long-double tag))))
 
@@ -109,14 +110,14 @@
 
       (= 'double tag)
       `(double ~value)
-      
+
       (= 'java.lang.Integer tag)
       `(int ~value)
 
       :else
       (vary-meta value assoc :tag (.getName tag)))))
 
-(defn wrapper-multi-tail [klazz methods]
+(defn wrapper-multi-tail [^Class klazz methods]
   (let [static? (method-static? (first methods))
         nam (method-name (first methods))
         this (gensym "this")
@@ -128,54 +129,56 @@
                       (list '. (symbol (.getName klazz)) (symbol nam))
                       (instance-method nam))]
     `(~(tagged `[~@(when-not static? [this]) ~@arg-vec] ret)
-       ~(symbol "#?")
-         (:cljs (~@method-call
-                  ~@(when-not static? [(tagged this klazz)])
-                  ~@arg-vec)
-          :clj
-          (cond
-            ~@(mapcat
-                (fn [method]
-                  `[(and ~@(map (fn [sym ^Class klz]
-                                  `(instance? (Class/forName ~(.getName (ensure-boxed (class-name klz)))) ~sym))
-                             arg-vec
-                             (parameter-types method)))
-                    (let [~@(mapcat (fn [sym ^Class klz]
-                                      [sym (tagged-local sym klz)])
-                              arg-vec
-                              (parameter-types method))]
-                      (~@method-call
-                        ~@(when-not static? [(tagged this klazz)])
-                        ~@arg-vec))])
-                methods)
-            :else (throw (IllegalArgumentException. "no corresponding java.time method with these args")))))))
+      ~(symbol "#?")
+      (:cljs (~@method-call
+              ~@(when-not static? [(tagged this klazz)])
+              ~@arg-vec)
+             :clj
+             (cond
+               ~@(mapcat
+                  (fn [method]
+                    `[(and ~@(map (fn [sym ^Class klz]
+                                    `(instance? (Class/forName ~(.getName (ensure-boxed (class-name klz)))) ~sym))
+                                  arg-vec
+                                  (parameter-types method)))
+                      (let [~@(mapcat (fn [sym ^Class klz]
+                                        [sym (tagged-local sym klz)])
+                                      arg-vec
+                                      (parameter-types method))]
+                        (~@method-call
+                         ~@(when-not static? [(tagged this klazz)])
+                         ~@arg-vec))])
+                  methods)
+               :else (throw (IllegalArgumentException. "no corresponding java.time method with these args")))))))
 
-(defn wrapper-tail [klazz method]
+(defn wrapper-tail [^Class klazz method]
   (let [nam (method-name method)
-        ret (return-type method)
+        ret (if (= java.lang.reflect.Constructor (type method))
+              klazz
+              (return-type method))
         par (parameter-types method)
         static? (method-static? method)
         arg-vec (into (if static? [] [(tagged (gensym "this") klazz)])
-                  (map #(tagged (gensym (class->name %)) %))
-                  par)
+                      (map #(tagged (gensym (class->name %)) %))
+                      par)
         method-call (if static?
                       (list '. (symbol (.getName klazz)) (symbol nam))
                       (instance-method nam))]
     `(~(tagged arg-vec ret)
-       (~@method-call ~@(map #(vary-meta % dissoc :tag) arg-vec)))))
+      (~@method-call ~@(map #(vary-meta % dissoc :tag) arg-vec)))))
 
-(defn method-wrapper-form [fname klazz methods]
+(defn method-wrapper-form [fname ^Class klazz methods]
   (let [arities (group-by parameter-count methods)
         static? (method-static? (first methods))]
     `(defn ~fname
        {:arglists '~(map (comp (partial into (if static? [] [(.getName klazz)]))
-                           #(map (fn [x] (.getName x)) %)
-                           parameter-types) methods)}
+                               #(map (fn [^Class x] (.getName x)) %)
+                               parameter-types) methods)}
        ~@(map (fn [[cnt meths]]
                 (if (= 1 (count meths))
                   (wrapper-tail klazz (first meths))
                   (wrapper-multi-tail klazz meths)))
-           arities))))
+              arities))))
 
 (defn methods-for-class [klazz]
   (->> klazz
